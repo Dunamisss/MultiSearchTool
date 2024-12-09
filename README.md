@@ -42,7 +42,7 @@ The following Python packages are required:
 
 ### Clone the Repository
 ```bash
-git clone https://github.com/yourusername/search-scraper-gui.git
+git clone https://github.com/Dunamisss/search-scraper-gui.git
 cd search-scraper-gui
 ```
 
