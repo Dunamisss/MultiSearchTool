@@ -71,11 +71,8 @@ This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) f
 
 ---
 
-## 🛡️ Acknowledgments
+###Contributing:
 
-This project is open for collaboration. Suggestions and feature requests are welcome! Submit an issue to share your ideas.
-
----
-
+We welcome contributions!  If you have suggestions, bug reports, or feature requests, please open an issue or submit a pull request.  Your help in improving this project is greatly appreciated.
 Let me know if you'd like to add anything else or need help configuring the repository further!
 
