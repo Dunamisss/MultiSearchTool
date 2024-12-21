@@ -14,6 +14,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from openpyxl.utils import get_column_letter
+import logger
+from urllib.parse import quote_plus
 
 # Constants for search operators and engines
 SEARCH_OPERATORS: Dict[str, str] = {
@@ -321,44 +323,24 @@ class SearchScraperGUI:
         bing_results = []
         session = requests.Session()
         offset = 0
-        max_pages = 50  # Add a maximum page limit
-        current_page = 0
-    
-        while len(bing_results) < num_results and current_page < max_pages:
-            try:
-                url = f"https://www.bing.com/search?q={query}&first={offset}"
-                response = self._get_response(session, url, headers)
-            
-                if not response:
-                    self._log_warning(f"No response received for offset {offset}")
-                    break
-                
-                soup = BeautifulSoup(response.text, "html.parser")
-                search_results = soup.find_all("li", {"class": "b_algo"})
-            
-                # If no results found on current page, break the loop
-                if not search_results:
-                    self._log_info(f"No more results found after offset {offset}")
-                    break
-            
-                for result in search_results:
-                    if len(bing_results) >= num_results:
-                        break
-                    extracted_result = self._extract_bing_result(result)
-                    if extracted_result:  # Only add if we got a valid result
-                        bing_results.append(extracted_result)
-            
-                offset += 10
-                current_page += 1
-            
-                # Add a small delay between requests
-                time.sleep(random.uniform(0.5, 1.5))
-            
-            except Exception as e:
-                self._log_error(f"Error scraping Bing at offset {offset}: {str(e)}")
+
+        while len(bing_results) < num_results:
+            url = f"https://www.bing.com/search?q={query}&first={offset}"
+            response = self._get_response(session, url, headers)
+
+            if not response:
                 break
-    
-        self._log_info(f"Scraped {len(bing_results)} results from Bing")
+
+            soup = BeautifulSoup(response.text, "html.parser")
+            search_results = soup.find_all("li", {"class": "b_algo"})
+        
+            for result in search_results:
+                if len(bing_results) >= num_results:
+                    break
+                bing_results.append(self._extract_bing_result(result))
+
+            offset += 10  # Increment offset for pagination
+
         return bing_results
 
     def _extract_bing_result(self, result) -> Dict:
@@ -385,113 +367,79 @@ class SearchScraperGUI:
             "User-Agent": self._get_random_user_agent(),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0"
+            "DNT": "1"
         }
         duckduckgo_results = []
         session = requests.Session()
         offset = 0
-        max_pages = 50
-        current_page = 0
-        max_retries = 3
-        retry_delay = 2
-
-        while len(duckduckgo_results) < num_results and current_page < max_pages:
-            for attempt in range(max_retries):
-                try:
-                    if self.stop_scraping.is_set():
-                        return duckduckgo_results
-
-                    url = f"https://html.duckduckgo.com/html/?q={query}&s={offset}"
-                    response = self._get_response(session, url, headers)
+        retries = 3
+    
+        while len(duckduckgo_results) < num_results and retries > 0:
+            try:
+                # Add random delay between requests
+                time.sleep(random.uniform(2, 4))
             
-                    if not response:
-                        self._log_warning(f"No response from DuckDuckGo on attempt {attempt + 1}")
-                        time.sleep(retry_delay * (attempt + 1))
-                        continue
+                url = f"https://html.duckduckgo.com/html/?q={query}&s={offset}&dc={offset}"
+                response = self._get_response(session, url, headers)
+            
+                if not response:
+                    retries -= 1
+                    continue
                 
-                    if response.status_code == 202:
-                        self._log_warning(f"DuckDuckGo returned 202 status, waiting before retry")
-                        time.sleep(retry_delay * (attempt + 1))
-                        continue
-
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    results = soup.find_all("div", class_="result")
-
+                soup = BeautifulSoup(response.text, "html.parser")
+                results = soup.select("div.result")
+            
+                if not results:
+                    # Try alternative selectors
+                    results = soup.select("div.web-result")
                     if not results:
-                        self._log_info(f"No results found on page {current_page}")
-                        return duckduckgo_results
-
-                    success = False
-                    for result in results:
-                        if len(duckduckgo_results) >= num_results:
-                            return duckduckgo_results
+                        retries -= 1
+                        continue
+            
+                for result in results:
+                    if len(duckduckgo_results) >= num_results:
+                        break
                     
-                        extracted_result = self._extract_duckduckgo_result(result, offset)
-                        if extracted_result:
-                            duckduckgo_results.append(extracted_result)
-                            success = True
-
-                    if success:
-                        break  # Break retry loop on success
-                    else:
-                        self._log_warning(f"No valid results extracted on attempt {attempt + 1}")
-                        time.sleep(retry_delay * (attempt + 1))
-
-                except Exception as e:
-                    self._log_error(f"Error scraping DuckDuckGo: {str(e)}")
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay * (attempt + 1))
-                    else:
-                        return duckduckgo_results
-
-            offset += 30
-            current_page += 1
-            time.sleep(random.uniform(1.5, 3))  # Increased delay between pages
-
-        self._log_info(f"Scraped {len(duckduckgo_results)} results from DuckDuckGo")
+                    extracted_result = self._extract_duckduckgo_result(result)
+                    if extracted_result and extracted_result["URL"]:
+                        duckduckgo_results.append(extracted_result)
+            
+                offset += 30
+            
+            except Exception as e:
+                self._log_error(f"Error scraping DuckDuckGo: {str(e)}")
+                retries -= 1
+                time.sleep(2)
+    
         return duckduckgo_results
 
-    def _extract_duckduckgo_result(self, result, offset: int) -> Dict:
+
+    def _extract_duckduckgo_result(self, result) -> Dict:
         try:
-            # Find the title and link
-            title_element = result.find("h2", class_="result__title")
-            link_element = result.find("a", class_="result__a")
+            title_element = result.select_one("a.result__a") or result.select_one("h2")
+            title = title_element.text.strip() if title_element else "No Title"
         
-            if not title_element or not link_element:
-                return None
-        
-            title = title_element.text.strip()
-            raw_url = link_element.get('href', '')
-        
-            # Extract the actual URL from DuckDuckGo's redirect
-            if raw_url.startswith('/'):
-                # Parse the URL parameters
-                parsed = urlparse(raw_url)
-                query_params = parse_qs(parsed.query)
-                url = query_params.get('uddg', [None])[0]
-                if url:
-                    url = unquote(url)
-            else:
-                url = raw_url
-        
-            # Get description
-            description_element = result.find("a", class_="result__snippet")
+            link_element = result.select_one("a.result__a") or result.select_one("a.result__url")
+            link = None
+            if link_element:
+                href = link_element.get("href", "")
+                if href.startswith("//duckduckgo.com/l/?"):
+                    parsed = urlparse("https:" + href)
+                    query_params = parse_qs(parsed.query)
+                    if "uddg" in query_params:
+                        link = unquote(query_params["uddg"][0])
+                else:
+                    link = href
+                
+            description_element = result.select_one("a.result__snippet")
             description = description_element.text.strip() if description_element else ""
         
             return {
                 "Search Engine": "DuckDuckGo",
                 "Title": title,
-                "URL": url,
+                "URL": link,
                 "Description": description,
-                "Page": offset // 30 + 1  # Calculate actual page number
+                "Page": random.randint(1, 10)
             }
         except Exception as e:
             self._log_error(f"Error extracting DuckDuckGo result: {str(e)}")
@@ -555,33 +503,42 @@ class SearchScraperGUI:
         self._log_info(f"Scraped {len(yahoo_results)} results from Yahoo")
         return yahoo_results
 
-    def _extract_yahoo_result(self, result) -> Dict:
+    def _extract_yahoo_result(self, result):
         try:
-            # Try multiple possible element locations
+            # Extract title
             title_element = (
-                result.find("h3", class_="title") or 
-                result.find("h3") or 
-                result.find("a", class_="ac-algo")
+            result.find("h3", class_="title") or 
+            result.find("h3") or 
+            result.find("a", class_="ac-algo")
             )
             title = title_element.text.strip() if title_element else "No Title"
-        
+
+            # Extract link
             link_element = result.find("a")
             link = None
             if link_element:
                 href = link_element.get("href", "")
                 # Extract actual URL from Yahoo's redirect
-                if "RU=" in href:
-                    link = unquote(href.split("RU=")[1].split("/RK=")[0])
+                if "/RU=" in href:
+                    # Split on /RU= and take everything after it, then split on /RK= and take everything before it
+                    link = unquote(href.split("/RU=")[1].split("/RK=")[0])
                 else:
                     link = href
-                
+
+            # Clean the extracted URL
+            if link:
+                link = link.strip()
+                if link.startswith("//"):
+                    link = "https:" + link
+
+            # Extract description
             description_element = (
                 result.find("div", class_="compText") or 
                 result.find("p", class_="lh-16") or
                 result.find("p")
             )
             description = description_element.text.strip() if description_element else ""
-        
+
             return {
                 "Search Engine": "Yahoo",
                 "Title": title,
@@ -590,51 +547,84 @@ class SearchScraperGUI:
                 "Page": random.randint(1, 10)
             }
         except Exception as e:
-            self._log_error(f"Error extracting Yahoo result: {str(e)}")
+            logger.error(f"Error extracting Yahoo result: {str(e)}")
             return None
 
+    def _search_yahoo(self, query, num_results=50):
+        try:
+            # Send a GET request to the search results page
+            url = "https://search.yahoo.com/search?p={}".format(quote_plus(query))
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+            }
+            response = requests.get(url, headers=headers, allow_redirects=True)
+
+            # If the response was redirected, follow the redirect
+            if response.history:
+                for resp in response.history:
+                    if resp.status_code == 302:
+                        # Handle the redirect to the consent page
+                        consent_url = resp.headers["Location"]
+                        consent_response = requests.get(consent_url, headers=headers)
+                        # Accept the consent (you might need to modify this based on the actual consent page)
+                        if "consent.yahoo.com" in consent_url:
+                            # ... (add code to accept the consent)
+                            pass  # Placeholder for consent handling code
+
+                # Parse the search results page
+                soup = BeautifulSoup(response.content, "html.parser")
+            else:
+                # If there was no redirect, parse the initial response
+                soup = BeautifulSoup(response.content, "html.parser")
+
+            # Find all search result elements
+            results = soup.find_all("div", class_="algo")
+
+            # Extract data from each result
+            extracted_results = []
+            for result in results[:num_results]:
+                extracted_result = self._extract_yahoo_result(result)
+                if extracted_result:
+                    extracted_results.append(extracted_result)
+
+            return extracted_results
+        except Exception as e:
+            logger.error(f"Error searching Yahoo: {str(e)}")
+            return []
     def scrape_mojeek(self, query: str, num_results: int) -> List[Dict]:
         headers = {"User-Agent": self._get_random_user_agent()}
         session = requests.Session()
         mojeek_results = []
-        max_pages = 50  # Add maximum page limit
-        current_page = 1
+        
 
-        while len(mojeek_results) < num_results and current_page < max_pages:
+        offset = 1
+        while len(mojeek_results) < num_results:
             if self.stop_scraping.is_set():
                 break
 
-            try:
-                url = f"https://www.mojeek.com/search?q={query}&page={current_page}"
-                response = self._get_response(session, url, headers)
-            
-                if not response:
-                    self._log_warning(f"No response received for page {current_page}")
-                    break
-
-                soup = BeautifulSoup(response.text, "html.parser")
-                results = soup.find_all("li", class_=re.compile("r[0-9]+"))
-
-                if not results:
-                    self._log_info(f"No more results found after page {current_page}")
-                    break
-
-                for result in results:
-                    if len(mojeek_results) >= num_results:
-                        break
-                    
-                    extracted_result = self._extract_mojeek_result(result)
-                    if extracted_result:
-                        mojeek_results.append(extracted_result)
-
-                current_page += 1
-                time.sleep(random.uniform(0.5, 1.5))  # Polite delay between requests
-
-            except Exception as e:
-                self._log_error(f"Error scraping Mojeek at page {current_page}: {str(e)}")
+            url = f"https://www.mojeek.com/search?q={query}&page={offset}"
+            response = self._get_response(session, url, headers)
+            if not response:
+                self._log_warning(f"No response received for Mojeek URL: {url}")
                 break
 
-        self._log_info(f"Scraped {len(mojeek_results)} results from Mojeek")
+            soup = BeautifulSoup(response.text, "html.parser")
+            results = soup.find_all("li", class_=re.compile("r[0-9]+"))
+            soup = BeautifulSoup(response.text, "html.parser")
+            results = soup.find_all("li", class_=re.compile("r[0-9]+"))
+
+            if not results:
+                self._log_warning(f"No results found on Mojeek for page {offset}")
+                break
+
+            for result in results:
+                if len(mojeek_results) >= num_results:
+                    break
+                extracted_result = self._extract_mojeek_result(result)
+                mojeek_results.append(extracted_result)
+
+            offset += 1  # Increment page number
+
         return mojeek_results
 
         
@@ -771,44 +761,43 @@ class SearchScraperGUI:
                 self._log_warning("No results to save. Aborting save operation.")
                 messagebox.showwarning("No Results", "There are no results to save.")
                 return
-        
+
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             output_format = self.output_format_var.get().lower()
             cleaned_query = self._clean_query(query)
             filename = f"{cleaned_query}_results_{timestamp}.{output_format}"
-        
+
             os.makedirs("results", exist_ok=True)
             filename = os.path.join("results", filename)
-        
+
             # Convert results to a flat list for DataFrame
             flat_results = []
             for engine_results in results.values():
                 flat_results.extend(engine_results)
-            
+
             df = pd.DataFrame(flat_results)
-        
+
             if output_format == "csv":
                 # Reorder columns for CSV
                 df = df[['Search Engine', 'Title', 'Page', 'URL', 'Description']]
                 df.to_csv(filename, index=False, encoding="utf-8-sig")
-            
             elif output_format == "xlsx":
                 with pd.ExcelWriter(filename, engine='openpyxl') as writer:
                     # Write main results sheet
                     df = df[['Search Engine', 'Title', 'Page', 'URL', 'Description']]
                     df.to_excel(writer, index=False, sheet_name="Results")
-                
+
                     # Format the Results sheet
                     worksheet = writer.sheets["Results"]
                     for idx, col in enumerate(df.columns):
                         max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
                         worksheet.column_dimensions[get_column_letter(idx + 1)].width = max_len
-                
+
                     # Make URLs clickable
                     for idx, url in enumerate(df["URL"], start=2):
                         if pd.notna(url):  # Check if URL is not NaN
                             worksheet.cell(row=idx, column=df.columns.get_loc("URL") + 1).hyperlink = url
-                
+
                     # Add summary sheet
                     summary_data = {
                         "Metric": ["Total Links Collected", "Total Duplicate Links Removed", "Total Unique Links"],
@@ -816,19 +805,19 @@ class SearchScraperGUI:
                     }
                     summary_df = pd.DataFrame(summary_data)
                     summary_df.to_excel(writer, index=False, sheet_name="Summary")
-                
+
                     # Format summary sheet
                     summary_sheet = writer.sheets["Summary"]
                     for idx, col in enumerate(summary_df.columns):
                         max_len = max(summary_df[col].astype(str).map(len).max(), len(col)) + 2
                         summary_sheet.column_dimensions[get_column_letter(idx + 1)].width = max_len
-        
+
             self._log_info(f"File saved successfully to {filename}")
             messagebox.showinfo("Results Saved", 
-                        f"Search results saved to {filename}\n"
-                        f"Total links collected: {total_links_collected}\n"
-                        f"Total duplicate links removed: {total_removed}")
-    
+                            f"Search results saved to {filename}\n"
+                            f"Total links collected: {total_links_collected}\n"
+                            f"Total duplicate links removed: {total_removed}")
+
         except Exception as e:
             self._log_error(f"Error occurred while saving results: {str(e)}")
             messagebox.showerror("Error", f"An error occurred while saving results: {str(e)}")
